@@ -34,10 +34,14 @@ import numpy as np
 import open3d as o3d
 import pandas as pd
 
-from functions import depth_map_to_pcl, transform_to_world, project_to_image, quat_to_4x4_homo, visualise_cams_clouds, exclude_out_of_frame
-import rerun as rr
-import roma
-import torch
+from functions import (depth_map_to_pcl,
+                       quat_to_4x4_homog,
+                       transform_to_world,
+                       find_common_points,
+                       project_to_image,
+                       remove_border_points,
+                       visualise_cams_clouds
+                    )
 
 def load_rgb_depth(image_id):
     """Load RGB image and depth map for a given image ID.
@@ -200,7 +204,6 @@ def visualize(filename, img_0, img_1, ps_0, ps_1):
     plt.savefig(filename, dpi=300)
     plt.show()
 
-
 def generate(idx):
     meta = pd.read_csv("dataset/data.csv")
     meta_0 = meta.iloc[idx[0]]
@@ -210,11 +213,11 @@ def generate(idx):
     img_1, depth_1 = load_rgb_depth(idx[1])
     # depth is now metric distance for each pixel
 
-    fig, axs = plt.subplots(2, 2, layout="constrained", figsize=(8, 4))
-    axs[0][0].imshow(img_0)
-    axs[0][1].imshow(depth_0)
-    axs[1][0].imshow(img_1)
-    axs[1][1].imshow(depth_1)
+    #fig, axs = plt.subplots(2, 2, layout="constrained", figsize=(8, 4))
+    #axs[0][0].imshow(img_0)
+    #axs[0][1].imshow(depth_0)
+    #axs[1][0].imshow(img_1)
+    #axs[1][1].imshow(depth_1)
     #plt.show()
 
     pos_0, rot_0 = get_pos_rot(meta_0)
@@ -231,98 +234,38 @@ def generate(idx):
 
     # 2. Transform points between camera coordinate systems
 
-    T_cam0_world = quat_to_4x4_homo(pos_0, rot_0)
+    T_cam0_world = quat_to_4x4_homog(pos_0, rot_0)
     transformed_pcl_0 = transform_to_world(T_cam0_world, pcl_0)
 
-    T_cam1_world = quat_to_4x4_homo(pos_1, rot_1)
+    T_cam1_world = quat_to_4x4_homog(pos_1, rot_1)
     transformed_pcl_1 = transform_to_world(T_cam1_world, pcl_1)
 
     ##############
-    camera_test = create_camera_gizmo(np.eye(4), meta_0.cam_fov, img_0.shape[:2], 0.25)
-    camera_0 = create_camera_gizmo(T_cam0_world, meta_0.cam_fov, img_0.shape[:2], 0.25)
-    camera_1 = create_camera_gizmo(T_cam1_world, meta_1.cam_fov, img_1.shape[:2], 0.25)
-    visualise_cams_clouds(point_cloud_0=transformed_pcl_0, point_cloud_1=transformed_pcl_1, camera_0=camera_0, camera_1=camera_1)
+    #camera_test = create_camera_gizmo(np.eye(4), meta_0.cam_fov, img_0.shape[:2], 0.25)
+    #camera_0 = create_camera_gizmo(T_cam0_world, meta_0.cam_fov, img_0.shape[:2], 0.25)
+    #camera_1 = create_camera_gizmo(T_cam1_world, meta_1.cam_fov, img_1.shape[:2], 0.25)
+    #visualise_cams_clouds(point_cloud_0=transformed_pcl_0, point_cloud_1=transformed_pcl_1, camera_0=camera_0, camera_1=camera_1)
+    ##############
+
+    # 2.5. Find which points are in common by distance to nearest point in the other point cloud
+
+    common_pcl = find_common_points(transformed_pcl_0, transformed_pcl_1, threshold=0.03)
+
+    ##############
+    #camera_test = create_camera_gizmo(np.eye(4), meta_0.cam_fov, img_0.shape[:2], 0.25)
+    #camera_0 = create_camera_gizmo(T_cam0_world, meta_0.cam_fov, img_0.shape[:2], 0.25)
+    #camera_1 = create_camera_gizmo(T_cam1_world, meta_1.cam_fov, img_1.shape[:2], 0.25)
+    #visualise_cams_clouds(point_cloud_0=common_pcl, point_cloud_1=common_pcl, camera_0=camera_0, camera_1=camera_1)
     ##############
 
     # 3. Project points into image space
 
-    # When I do this with projecting own points onto own image, it works, so must be relative positions of the cameras.
-    ps_0 = project_to_image(transformed_pcl_0, intrinsics_0, T_cam0_world=T_cam0_world)
-    ps_1 = project_to_image(transformed_pcl_1, intrinsics_1, T_cam0_world=T_cam1_world)
+    ps_0 = project_to_image(common_pcl, intrinsics_0, T_cam0_world)
+    ps_1 = project_to_image(common_pcl, intrinsics_1, T_cam1_world)
 
-    #ps_0 = project_to_image(transformed_pcl_0, intrinsics_0, rot_0=rot_0, pos_0=pos_0)
-    #ps_1 = project_to_image(transformed_pcl_1, intrinsics_1, rot_0=rot_1, pos_0=pos_1)
-
-    ps_0, ps_1 = exclude_out_of_frame(ps_0, ps_1, intrinsics_0)
-
-    # 4. Find and return corresponding pixels ps_0 of shape (N, 2) and ps_1 of shape (N, 2)
+    ps_0, ps_1 = remove_border_points(ps_0, ps_1, intrinsics_0, intrinsics_1)
 
     return img_0, ps_0, img_1, ps_1
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-    homo_0 = quat_to_4x4_homo(pos_0, rot_0)
-    homo_1 = quat_to_4x4_homo(pos_1, rot_1)
-
-    # Sample code to show both camera gizmo at origin
-    camera_0 = create_camera_gizmo(homo_0, meta_0.cam_fov, img_0.shape[:2], 0.25)
-    camera_1 = create_camera_gizmo(homo_1, meta_1.cam_fov, img_0.shape[:2], 0.25)
-
-
-
-    pcl_0 = depth_map_to_pcl(depth_0, meta_0["cam_fov"])
-    pcl_1 = depth_map_to_pcl(depth_1, meta_1["cam_fov"])
-
-    #rr.init("depth_point_cloud", spawn=True)
-    #rr.log("point_cloud", rr.Points3D(visualisable_pcl1, colors=[(0, 255, 0)] * len(visualisable_pcl1)))
-
-    # 2. Transform points between camera coordinate systems
-
-
-    # Visualize
-    o3d.visualization.draw_geometries([pcd0] + [pcd1] + camera_0 + camera_1)
-
-    breakpoint()
-
-    rr.init("depth_point_cloud", spawn=True)
-    rr.log("point_cloud_0", rr.Points3D(transformed_pcl_0, colors=(0, 255, 0)))
-    rr.log("point_cloud_1", rr.Points3D(transformed_pcl_1, colors=(255, 0, 0)))
-    breakpoint()
-
-    # 3. Project points into image space
-
-    points1 = project_to_image()
-    points2 = project_to_image()
-
-    # 4. Find and return corresponding pixels ps_0 of shape (N, 2) and ps_1 of shape (N, 2)
-
-    ps_0 = (np.random.rand(10000, 2) * 224).astype(np.int32)
-    ps_1 = (np.random.rand(10000, 2) * 224).astype(np.int32)
-    return img_0, ps_0, img_1, ps_1
-
 
 if __name__ == "__main__":
     sample_idxs = [
