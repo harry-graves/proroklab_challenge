@@ -34,7 +34,7 @@ import numpy as np
 import open3d as o3d
 import pandas as pd
 
-from functions import depth_map_to_pcl, transform_to_world, project_to_image, quat_to_4x4_homo, visualise_cams_clouds
+from functions import depth_map_to_pcl, transform_to_world, project_to_image, quat_to_4x4_homo, visualise_cams_clouds, exclude_out_of_frame
 import rerun as rr
 import roma
 import torch
@@ -241,17 +241,22 @@ def generate(idx):
     camera_test = create_camera_gizmo(np.eye(4), meta_0.cam_fov, img_0.shape[:2], 0.25)
     camera_0 = create_camera_gizmo(T_cam0_world, meta_0.cam_fov, img_0.shape[:2], 0.25)
     camera_1 = create_camera_gizmo(T_cam1_world, meta_1.cam_fov, img_1.shape[:2], 0.25)
-    #visualise_cams_clouds(transformed_pcl_0, transformed_pcl_1, camera_0, camera_1)
-    #breakpoint()
+    visualise_cams_clouds(point_cloud_0=transformed_pcl_0, point_cloud_1=transformed_pcl_1, camera_0=camera_0, camera_1=camera_1)
     ##############
 
     # 3. Project points into image space
 
-    ps_0 = project_to_image(transformed_pcl_1, T_cam0_world, intrinsics_0, camera_test)
-    ps_1 = project_to_image(transformed_pcl_0, T_cam1_world, intrinsics_1)
+    # When I do this with projecting own points onto own image, it works, so must be relative positions of the cameras.
+    ps_0 = project_to_image(transformed_pcl_0, intrinsics_0, T_cam0_world=T_cam0_world)
+    ps_1 = project_to_image(transformed_pcl_1, intrinsics_1, T_cam0_world=T_cam1_world)
+
+    #ps_0 = project_to_image(transformed_pcl_0, intrinsics_0, rot_0=rot_0, pos_0=pos_0)
+    #ps_1 = project_to_image(transformed_pcl_1, intrinsics_1, rot_0=rot_1, pos_0=pos_1)
+
+    ps_0, ps_1 = exclude_out_of_frame(ps_0, ps_1, intrinsics_0)
 
     # 4. Find and return corresponding pixels ps_0 of shape (N, 2) and ps_1 of shape (N, 2)
-    #breakpoint()
+
     return img_0, ps_0, img_1, ps_1
 
 

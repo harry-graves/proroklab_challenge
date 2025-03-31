@@ -2,6 +2,7 @@ import numpy as np
 import open3d as o3d
 import roma
 import torch
+import cv2
 
 def depth_map_to_pcl(depth_map, cam_fov):
 
@@ -56,7 +57,7 @@ def transform_to_world(T_cam_world, point_cloud):
 
     return transformed_point_cloud
 
-def visualise_cams_clouds(point_cloud_0, camera_0, point_cloud_1=None, camera_1=None):
+def visualise_cams_clouds(point_cloud_0=None, camera_0=None, point_cloud_1=None, camera_1=None):
 
     pcd0 = o3d.geometry.PointCloud()
     pcd0.points = o3d.utility.Vector3dVector(point_cloud_0)
@@ -72,7 +73,64 @@ def visualise_cams_clouds(point_cloud_0, camera_0, point_cloud_1=None, camera_1=
 
         o3d.visualization.draw_geometries([pcd0] + [pcd1] + camera_0 + camera_1)
 
-def project_to_image(point_cloud_1, T_cam0_world, intrinsics_0, camera_test=None):
+def project_to_image(point_cloud_1, intrinsics_0, T_cam0_world=None, pos_0=None, rot_0=None, camera_test=None):
+
+    if pos_0 is not None and rot_0 is not None:
+
+        quat_inv = roma.quat_inverse(torch.tensor(rot_0))
+        rotvec_inv = np.array(roma.unitquat_to_rotvec(quat_inv))
+
+        rotmat_inv = roma.unitquat_to_rotmat(quat_inv)
+        translation_inv = np.array(-rotmat_inv.T @ pos_0)
+
+        f_x, f_y, W, H = intrinsics_0
+        K = np.zeros([3,3])
+        K[0, 0], K[1, 1], K[0,2], K[1,2] = f_x, f_y, W/2, H/2
+
+        pixel_points, _ = cv2.projectPoints(
+            objectPoints=point_cloud_1.astype(np.float32), 
+            rvec=rotvec_inv, 
+            tvec=translation_inv, 
+            cameraMatrix=K.astype(np.float32), 
+            distCoeffs=np.array([])
+        )
+
+        pixel_points = pixel_points.squeeze(axis=1)  # Removes the middle dimension
+
+        return pixel_points
+    
+    elif T_cam0_world is not None:
+
+        # Calculate transformation from world back to cam0's frame
+        T_world_cam0 = np.linalg.inv(T_cam0_world)
+        
+        rotation = torch.tensor(T_world_cam0[:3,:3])
+        rotvec = roma.rotmat_to_rotvec(rotation)
+        rotvec = np.array(rotvec)
+        translation = T_world_cam0[:3,3]
+
+        f_x, f_y, W, H = intrinsics_0
+        K = np.zeros([3,3])
+        K[0, 0], K[1, 1], K[0,2], K[1,2] = f_x, f_y, W/2, H/2
+
+        pixel_points, _ = cv2.projectPoints(
+            objectPoints=point_cloud_1.astype(np.float32), 
+            rvec=rotvec, 
+            tvec=translation, 
+            cameraMatrix=K.astype(np.float32), 
+            distCoeffs=np.array([])
+        )
+
+        pixel_points = pixel_points.squeeze(axis=1)  # Removes the middle dimension
+
+        return pixel_points
+
+
+
+
+
+
+
 
     # Calculate transformation from world back to cam0's frame
     T_world_cam0 = np.linalg.inv(T_cam0_world)
@@ -98,7 +156,33 @@ def project_to_image(point_cloud_1, T_cam0_world, intrinsics_0, camera_test=None
 
     pixel_coords = pixel_coords @ K.T
 
+    # Normalize homogeneous coordinates (divide by depth)
+    pixel_coords[:, 0] /= transformed_point_cloud[:, 2]  # x / z
+    pixel_coords[:, 1] /= transformed_point_cloud[:, 2]  # y / z
+
     # Recover coordinates by removing the third column
     pixel_coords = pixel_coords[:,:2]
 
     return pixel_coords
+
+def exclude_out_of_frame(ps_0, ps_1, intrinsics_0):
+
+    _, _, W, H = intrinsics_0
+
+    mask_0 = (
+        (ps_0[:, 0] >= 0) & (ps_0[:, 0] < W) &  # Within image width
+        (ps_0[:, 1] >= 0) & (ps_0[:, 1] < H) #&  # Within image height
+        #(transformed_point_cloud[:, 2] > 0)  # In front of camera
+    )
+    ps_0 = ps_0[mask_0]
+    ps_1 = ps_1[mask_0]
+
+    mask_1 = (
+        (ps_1[:, 0] >= 0) & (ps_1[:, 0] < W) &  # Within image width
+        (ps_1[:, 1] >= 0) & (ps_1[:, 1] < H) #&  # Within image height
+        #(transformed_point_cloud[:, 2] > 0)  # In front of camera
+    )
+    ps_0 = ps_0[mask_1]
+    ps_1 = ps_1[mask_1]
+
+    return ps_0, ps_1
