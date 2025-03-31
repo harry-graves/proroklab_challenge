@@ -1,3 +1,5 @@
 venv
 dataset
 result_*.jpg
+DepthC*
+*__pycache__*
