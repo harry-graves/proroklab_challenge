@@ -19,6 +19,8 @@ def depth_map_to_pcl(depth_map, cam_fov):
     x = (u - c_x) / f_x
     y = (v - c_y) / f_y
 
+    intrinsics = [f_x, f_y, W, H]
+
     # Compute 3D coordinates in camera frame
     Z = -depth_map # Negative sign due to camera coordinate convention
     X = -x * Z
@@ -27,29 +29,7 @@ def depth_map_to_pcl(depth_map, cam_fov):
     # Use a stack to form the point cloud, of size (HxW,3)
     point_cloud = np.stack([X, Y, Z], axis=-1).reshape(-1,3)
 
-    return point_cloud
-
-def transform_to_world(point_cloud, pos, unitquat):
-
-    # Convert to tensors, explicitly giving precision
-    point_cloud = torch.tensor(point_cloud, dtype=torch.float32)
-    unitquat = torch.tensor(unitquat, dtype=torch.float32)
-    pos = torch.tensor(pos, dtype=torch.float32)
-
-    # Convert quaternion to rotation matrix
-    unitquat = roma.quat_wxyz_to_xyzw(unitquat)
-    rotmat = roma.unitquat_to_rotmat(unitquat)
-
-    # Perform the transformation
-    point_cloud_world = (rotmat @ point_cloud.T).T + pos
-
-    return point_cloud_world
-
-def project_to_image():
-
-
-
-    pass
+    return point_cloud, intrinsics
 
 def quat_to_4x4_homo(pos, quat):
 
@@ -66,12 +46,59 @@ def quat_to_4x4_homo(pos, quat):
 
     return homo_0
 
-def transform_to_world_new(homo, point_cloud):
+def transform_to_world(T_cam_world, point_cloud):
 
     point_cloud_extended = np.concatenate((point_cloud, np.ones((point_cloud.shape[0], 1))), axis=1)
     
-    transformed_point_cloud = point_cloud_extended @ homo.T
+    transformed_point_cloud = point_cloud_extended @ T_cam_world.T
 
     transformed_point_cloud = transformed_point_cloud[:,:3]
 
     return transformed_point_cloud
+
+def visualise_cams_clouds(point_cloud_0, camera_0, point_cloud_1=None, camera_1=None):
+
+    pcd0 = o3d.geometry.PointCloud()
+    pcd0.points = o3d.utility.Vector3dVector(point_cloud_0)
+    pcd0.paint_uniform_color([1,0,0])
+
+    if point_cloud_1 is None:
+        o3d.visualization.draw_geometries([pcd0] + camera_0)
+
+    else:
+        pcd1 = o3d.geometry.PointCloud()
+        pcd1.points = o3d.utility.Vector3dVector(point_cloud_1)
+        pcd1.paint_uniform_color([0,1,0])
+
+        o3d.visualization.draw_geometries([pcd0] + [pcd1] + camera_0 + camera_1)
+
+def project_to_image(point_cloud_1, T_cam0_world, intrinsics_0, camera_test=None):
+
+    # Calculate transformation from world back to cam0's frame
+    T_world_cam0 = np.linalg.inv(T_cam0_world)
+
+    # Move points from world into cam0's frame
+    point_cloud_extended = np.concatenate((point_cloud_1, np.ones((point_cloud_1.shape[0], 1))), axis=1)
+    transformed_point_cloud = point_cloud_extended @ T_world_cam0.T
+
+    #transformed_point_cloud = transformed_point_cloud[:,:3]
+    #visualise_cams_clouds(transformed_point_cloud, camera_test)
+    #breakpoint()
+
+    # Project into ideal camera via a vanilla perspective transformation
+    vanilla = np.zeros([3,4])
+    vanilla[0:3, 0:3] = np.diag([1,1,1])
+
+    pixel_coords = transformed_point_cloud @ vanilla.T
+
+    # Map the ideal image into the real image using intrinsic matrix
+    f_x, f_y, W, H = intrinsics_0
+    K = np.zeros([3,3])
+    K[0, 0], K[1, 1], K[0,2], K[1,2] = f_x, f_y, W/2, H/2
+
+    pixel_coords = pixel_coords @ K.T
+
+    # Recover coordinates by removing the third column
+    pixel_coords = pixel_coords[:,:2]
+
+    return pixel_coords

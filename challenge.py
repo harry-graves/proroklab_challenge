@@ -34,7 +34,7 @@ import numpy as np
 import open3d as o3d
 import pandas as pd
 
-from functions import depth_map_to_pcl, transform_to_world, project_to_image, quat_to_4x4_homo, transform_to_world_new
+from functions import depth_map_to_pcl, transform_to_world, project_to_image, quat_to_4x4_homo, visualise_cams_clouds
 import rerun as rr
 import roma
 import torch
@@ -221,34 +221,38 @@ def generate(idx):
     pos_1, rot_1 = get_pos_rot(meta_1)
     # pos is x, y, z; rot is quaternion x, y, z, w
 
-    homo_0 = quat_to_4x4_homo(pos_0, rot_0) # The problem lies here!
-    pcl_0 = depth_map_to_pcl(depth_0, meta_0["cam_fov"])
-    transformed_pcl_0 = transform_to_world_new(homo_0, pcl_0)
-    camera_0 = create_camera_gizmo(homo_0, meta_0.cam_fov, img_0.shape[:2], 0.25)
+    # TODO: Implement your solution here
+    # Expected steps:
 
-    homo_1 = quat_to_4x4_homo(pos_1, rot_1)
-    pcl_1 = depth_map_to_pcl(depth_1, meta_1["cam_fov"])
-    transformed_pcl_1 = transform_to_world_new(homo_1, pcl_1)
-    camera_1 = create_camera_gizmo(homo_1, meta_1.cam_fov, img_1.shape[:2], 0.25)
+    # 1. Convert depth maps to point clouds
 
-    pcd0 = o3d.geometry.PointCloud()
-    pcd0.points = o3d.utility.Vector3dVector(transformed_pcl_0)
-    pcd0.paint_uniform_color([1,0,0])
+    pcl_0, intrinsics_0 = depth_map_to_pcl(depth_0, meta_0["cam_fov"])
+    pcl_1, intrinsics_1 = depth_map_to_pcl(depth_1, meta_1["cam_fov"])
 
-    pcd1 = o3d.geometry.PointCloud()
-    pcd1.points = o3d.utility.Vector3dVector(transformed_pcl_1)
-    pcd1.paint_uniform_color([0,1,0])
+    # 2. Transform points between camera coordinate systems
 
-    o3d.visualization.draw_geometries([pcd0] + [pcd1] + camera_0 + camera_1)
+    T_cam0_world = quat_to_4x4_homo(pos_0, rot_0)
+    transformed_pcl_0 = transform_to_world(T_cam0_world, pcl_0)
 
+    T_cam1_world = quat_to_4x4_homo(pos_1, rot_1)
+    transformed_pcl_1 = transform_to_world(T_cam1_world, pcl_1)
 
-    return
+    ##############
+    camera_test = create_camera_gizmo(np.eye(4), meta_0.cam_fov, img_0.shape[:2], 0.25)
+    camera_0 = create_camera_gizmo(T_cam0_world, meta_0.cam_fov, img_0.shape[:2], 0.25)
+    camera_1 = create_camera_gizmo(T_cam1_world, meta_1.cam_fov, img_1.shape[:2], 0.25)
+    #visualise_cams_clouds(transformed_pcl_0, transformed_pcl_1, camera_0, camera_1)
+    #breakpoint()
+    ##############
 
+    # 3. Project points into image space
 
+    ps_0 = project_to_image(transformed_pcl_1, T_cam0_world, intrinsics_0, camera_test)
+    ps_1 = project_to_image(transformed_pcl_0, T_cam1_world, intrinsics_1)
 
-
-
-
+    # 4. Find and return corresponding pixels ps_0 of shape (N, 2) and ps_1 of shape (N, 2)
+    #breakpoint()
+    return img_0, ps_0, img_1, ps_1
 
 
 
@@ -282,10 +286,7 @@ def generate(idx):
     camera_0 = create_camera_gizmo(homo_0, meta_0.cam_fov, img_0.shape[:2], 0.25)
     camera_1 = create_camera_gizmo(homo_1, meta_1.cam_fov, img_0.shape[:2], 0.25)
 
-    # TODO: Implement your solution here
-    # Expected steps:
 
-    # 1. Convert depth maps to point clouds
 
     pcl_0 = depth_map_to_pcl(depth_0, meta_0["cam_fov"])
     pcl_1 = depth_map_to_pcl(depth_1, meta_1["cam_fov"])
@@ -295,16 +296,6 @@ def generate(idx):
 
     # 2. Transform points between camera coordinate systems
 
-    transformed_pcl_0 = transform_to_world(pcl_0, pos_0, rot_0)
-    transformed_pcl_1 = transform_to_world(pcl_1, pos_1, rot_1)
-
-    pcd0 = o3d.geometry.PointCloud()
-    pcd0.points = o3d.utility.Vector3dVector(transformed_pcl_0)
-    pcd0.paint_uniform_color([1,0,0])
-
-    pcd1 = o3d.geometry.PointCloud()
-    pcd1.points = o3d.utility.Vector3dVector(transformed_pcl_1)
-    pcd1.paint_uniform_color([0,1,0])
 
     # Visualize
     o3d.visualization.draw_geometries([pcd0] + [pcd1] + camera_0 + camera_1)
@@ -322,7 +313,6 @@ def generate(idx):
     points2 = project_to_image()
 
     # 4. Find and return corresponding pixels ps_0 of shape (N, 2) and ps_1 of shape (N, 2)
-
 
     ps_0 = (np.random.rand(10000, 2) * 224).astype(np.int32)
     ps_1 = (np.random.rand(10000, 2) * 224).astype(np.int32)
