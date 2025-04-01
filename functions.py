@@ -153,11 +153,11 @@ def project_to_image(point_cloud, intrinsics, T_cam_world, method="torch"):
 
         # Move points from world into cam0's frame
         point_cloud_extended = torch.cat((point_cloud, torch.ones((point_cloud.shape[0], 1))), dim=1)
-        transformed_point_cloud = (point_cloud_extended @ T_world_cam.T)[:, :3]  # Extract XYZ
+        point_cloud_cam_frame = (point_cloud_extended @ T_world_cam.T)[:, :3]  # Extract XYZ
 
         # Project into ideal camera via perspective transformation
         # NOTE - this clone is redundant, but has been kept for readability
-        pixel_coords = transformed_point_cloud.clone()  # (N, 3)
+        pixel_coords = point_cloud_cam_frame.clone()  # (N, 3)
 
         # Map the ideal image into the real image using intrinsic matrix
         f_x, f_y, W, H = intrinsics
@@ -188,7 +188,7 @@ def project_to_image(point_cloud, intrinsics, T_cam_world, method="torch"):
         K[0, 0], K[1, 1], K[0,2], K[1,2] = f_x, f_y, W/2, H/2
 
         # Project points
-        pixel_coords, _ = cv2.projectPointT_world_cams(
+        pixel_coords, _ = cv2.projectPoints(
             objectPoints=np.array(point_cloud, dtype=np.float32), 
             rvec=np.array(rotvec, dtype=np.float32), 
             tvec=np.array(translation, dtype=np.float32), 
@@ -209,9 +209,9 @@ def project_to_image(point_cloud, intrinsics, T_cam_world, method="torch"):
     # Flip x coords due to difference in coordinate convention
     pixel_coords[:,0] = W - pixel_coords[:,0]
 
-    return pixel_coords
+    return pixel_coords, point_cloud_cam_frame
 
-def remove_border_points(ps_0, ps_1, intrinsics_0, intrinsics_1):
+def remove_border_points(ps_0, pcl_0, pcl_1, intrinsics_0):
     """
     Filters out points that fall outside the valid image boundaries in both camera views.
 
@@ -233,25 +233,13 @@ def remove_border_points(ps_0, ps_1, intrinsics_0, intrinsics_1):
     """
     _, _, W, H = intrinsics_0
 
-    mask_0 = (
+    mask = (
     (ps_0[:, 0] >= 0) & (ps_0[:, 0] < W) & # Within image width
-    (ps_0[:, 1] >= 0) & (ps_0[:, 1] < H) # Within image height
+    (ps_0[:, 1] >= 0) & (ps_0[:, 1] < H) & # Within image height
+    (pcl_0[:,2] < 0) & (pcl_1[:,2] < 0)
     )
 
-    ps_0 = ps_0[mask_0]
-    ps_1 = ps_1[mask_0]
-
-    _, _, W, H = intrinsics_1
-
-    mask_1 = (
-    (ps_1[:, 0] >= 0) & (ps_1[:, 0] < W) &
-    (ps_1[:, 1] >= 0) & (ps_1[:, 1] < H)
-    )
-
-    ps_0 = ps_0[mask_1]
-    ps_1 = ps_1[mask_1]
-
-    return ps_0, ps_1
+    return mask
 
 def visualise_cams_clouds(point_cloud_0=None, camera_0=None, point_cloud_1=None, camera_1=None):
     """

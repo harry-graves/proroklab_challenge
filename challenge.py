@@ -252,9 +252,15 @@ def generate(idx):
     #visualise_cams_clouds(point_cloud_0=transformed_pcl_0, point_cloud_1=transformed_pcl_1, camera_0=camera_0, camera_1=camera_1)
     ##############
 
-    # 2.5. Find which points are in common by distance to nearest point in the other point cloud
+    # 3. Project points into image space
 
-    common_pcl = find_common_points(transformed_pcl_0, transformed_pcl_1, threshold=0.03)
+    ps_0, pcl_1_cam_frame = project_to_image(transformed_pcl_1, intrinsics_0, T_cam0_world)
+    ps_1, pcl_0_cam_frame = project_to_image(transformed_pcl_0, intrinsics_1, T_cam1_world)
+
+    # 3.5 Mask points that lie outside the image
+
+    mask = remove_border_points(ps_0, pcl_0_cam_frame, pcl_1_cam_frame, intrinsics_0)
+    common_pcl = transformed_pcl_1[mask]
 
     ##############
     #camera_test = create_camera_gizmo(np.eye(4), meta_0.cam_fov, img_0.shape[:2], 0.25)
@@ -263,12 +269,10 @@ def generate(idx):
     #visualise_cams_clouds(point_cloud_0=common_pcl, point_cloud_1=common_pcl, camera_0=camera_0, camera_1=camera_1)
     ##############
 
-    # 3. Project points into image space
+    # 4. Project masked points into image space
 
-    ps_0 = project_to_image(common_pcl, intrinsics_0, T_cam0_world, method="torch")
-    ps_1 = project_to_image(common_pcl, intrinsics_1, T_cam1_world, method="opencv")
-
-    ps_0, ps_1 = remove_border_points(ps_0, ps_1, intrinsics_0, intrinsics_1)
+    ps_0, _ = project_to_image(common_pcl, intrinsics_0, T_cam0_world)
+    ps_1, _ = project_to_image(common_pcl, intrinsics_1, T_cam1_world)
 
     # Finally, convert from tensors to numpy arrays as everything from here on is visualization
     ps_0 = np.asarray(ps_0, dtype=np.float32)
