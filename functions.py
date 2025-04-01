@@ -156,6 +156,7 @@ def project_to_image(point_cloud, intrinsics, T_cam_world, method="torch"):
         transformed_point_cloud = (point_cloud_extended @ T_world_cam.T)[:, :3]  # Extract XYZ
 
         # Project into ideal camera via perspective transformation
+        # NOTE - this clone is redundant, but has been kept for readability
         pixel_coords = transformed_point_cloud.clone()  # (N, 3)
 
         # Map the ideal image into the real image using intrinsic matrix
@@ -187,7 +188,7 @@ def project_to_image(point_cloud, intrinsics, T_cam_world, method="torch"):
         K[0, 0], K[1, 1], K[0,2], K[1,2] = f_x, f_y, W/2, H/2
 
         # Project points
-        pixel_coords, _ = cv2.projectPoints(
+        pixel_coords, _ = cv2.projectPointT_world_cams(
             objectPoints=np.array(point_cloud, dtype=np.float32), 
             rvec=np.array(rotvec, dtype=np.float32), 
             tvec=np.array(translation, dtype=np.float32), 
@@ -243,8 +244,8 @@ def remove_border_points(ps_0, ps_1, intrinsics_0, intrinsics_1):
     _, _, W, H = intrinsics_1
 
     mask_1 = (
-    (ps_1[:, 0] >= 0) & (ps_1[:, 0] < W) & # Within image width
-    (ps_1[:, 1] >= 0) & (ps_1[:, 1] < H) # Within image height
+    (ps_1[:, 0] >= 0) & (ps_1[:, 0] < W) &
+    (ps_1[:, 1] >= 0) & (ps_1[:, 1] < H)
     )
 
     ps_0 = ps_0[mask_1]
