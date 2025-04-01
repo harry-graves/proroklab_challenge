@@ -34,14 +34,16 @@ import numpy as np
 import open3d as o3d
 import pandas as pd
 
-from functions import (depth_map_to_pcl,
-                       quat_to_4x4_homog,
-                       transform_to_world,
-                       find_common_points,
-                       project_to_image,
-                       remove_border_points,
-                       visualise_cams_clouds
-                    )
+import torch
+from functions import (
+    depth_map_to_pcl,
+    quat_to_4x4_homog,
+    transform_to_world,
+    find_common_points,
+    project_to_image,
+    remove_border_points,
+    visualise_cams_clouds
+)
 
 def load_rgb_depth(image_id):
     """Load RGB image and depth map for a given image ID.
@@ -229,6 +231,9 @@ def generate(idx):
 
     # 1. Convert depth maps to point clouds
 
+    depth_0 = torch.tensor(depth_0)
+    depth_1 = torch.tensor(depth_1)
+
     pcl_0, intrinsics_0 = depth_map_to_pcl(depth_0, meta_0["cam_fov"])
     pcl_1, intrinsics_1 = depth_map_to_pcl(depth_1, meta_1["cam_fov"])
 
@@ -264,6 +269,10 @@ def generate(idx):
     ps_1 = project_to_image(common_pcl, intrinsics_1, T_cam1_world)
 
     ps_0, ps_1 = remove_border_points(ps_0, ps_1, intrinsics_0, intrinsics_1)
+
+    # Finally, convert from tensors to numpy arrays as everything from here on is visualization
+    ps_0 = np.asarray(ps_0, dtype=np.float32)
+    ps_1 = np.asarray(ps_1, dtype=np.float32)
 
     return img_0, ps_0, img_1, ps_1
 
