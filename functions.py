@@ -157,54 +157,38 @@ def project_to_image(point_cloud, intrinsics, T_cam_world):
 
     return pixel_coords, point_cloud_cam_frame
 
-def remove_border_points(ps_0, pcl_1_frame_cam0, pcl_0_frame_cam1, intrinsics_0, depth_0, depth_1, depth_threshold=0.1):
-
+def filter_points(ps_0, intrinsics_0, pcl_1_frame_cam0, pcl_0_frame_cam1, depth_0, depth_threshold=0.1):
     """
-    Filters out points based on their position within the image boundaries and checks for occlusion or depth inconsistencies 
-    between corresponding points in two camera views.
+    Filters out points that fall outside image boundaries, are behind cameras, or are occluded.
 
-    The function performs the following steps:
-    1. Filters points that lie within the valid image boundaries of the first camera.
-    2. Ensures that points are in front of both cameras (based on their depth in the camera frames).
-    3. Filters out occluded points by comparing their depth values with a provided threshold.
-    
     Args:
         ps_0 (torch.Tensor): A tensor of shape (N, 2) representing pixel coordinates in the first image.
-        pcl_1_frame_cam0 (torch.Tensor): A tensor of shape (N, 3) representing 3D points in the first camera frame.
-        pcl_0_frame_cam1 (torch.Tensor): A tensor of shape (N, 3) representing 3D points in the second camera frame.
-        intrinsics_0 (tuple): A tuple containing the intrinsic parameters of the first camera [f_x, f_y, W, H]
-        depth_0 (torch.Tensor): A tensor of shape (H, W) representing the depth map of the first camera.
-        depth_1 (torch.Tensor): A tensor of shape (H, W) representing the depth map of the second camera.
-        depth_threshold (float, optional): A threshold to account for depth inconsistencies between corresponding points. 
+        intrinsics_0 (tuple or list): Camera intrinsics [f_x, f_y, W, H] for the first camera.
+        pcl_1_frame_cam0 (torch.Tensor): (N, 3) point cloud transformed from camera 1 to camera 0's frame.
+        pcl_0_frame_cam1 (torch.Tensor): (N, 3) point cloud transformed from camera 0 to camera 1's frame.
+        depth_0 (torch.Tensor): A tensor of shape (N,) representing depth values of the first camera's image.
+        depth_threshold (float, optional): A threshold to account for depth errors when checking occlusion. 
                                            Defaults to 0.1.
 
     Returns:
-        torch.Tensor: A tensor of shape (N,) representing a boolean mask where `True` indicates a point is valid 
-                      (i.e., within the image boundaries, not behind the camera, and not occluded by depth inconsistencies).
-
+        torch.Tensor: A boolean mask of shape (N,) indicating which points are valid.
+    
     Notes:
-        - The function ensures that the points lie within the image dimensions of the first camera.
-        - Points that lie behind either camera (i.e., have a negative depth) are filtered out.
-        - Occlusion is detected by comparing the depth values of corresponding points between the two cameras, 
-          using a specified threshold to account for possible depth errors.
+        - Points outside the image width/height are removed.
+        - Points behind either camera (positive z-coordinates) are removed.
+        - Points occluded in the first camera's view (i.e., depth at projected pixel is smaller than the 
+          actual camera-to-point distance) are removed.
     """
     _, _, W, H = intrinsics_0
 
     depth_0 = depth_0.flatten()
-    depth_1 = depth_1.flatten()
 
-    pos_mask = (
+    mask = (
     (ps_0[:, 0] >= 0) & (ps_0[:, 0] < W) & # Within image width
     (ps_0[:, 1] >= 0) & (ps_0[:, 1] < H) & # Within image height
-    (pcl_0_frame_cam1[:,2] < 0) & (pcl_1_frame_cam0[:,2] < 0) #& # Infront of both cameras
-    #(depth_0 > torch.norm(pcl_1_frame_cam0, dim=1) + depth_threshold) & (depth_1 > torch.norm(pcl_0_frame_cam1, dim=1) + depth_threshold)
-    #(depth_0 - depth_threshold < torch.norm(pcl_1_frame_cam0, dim=1)) & (torch.norm(pcl_1_frame_cam0, dim=1) < depth_0 + depth_threshold) & 
-    #(depth_1 - depth_threshold < torch.norm(pcl_0_frame_cam1, dim=1)) & (torch.norm(pcl_0_frame_cam1, dim=1) < depth_1 + depth_threshold)
+    (pcl_0_frame_cam1[:,2] < 0) & (pcl_1_frame_cam0[:,2] < 0) & # Infront of both cameras
+    (depth_0 + depth_threshold >= torch.norm(pcl_1_frame_cam0, dim=1)) # Not occluded
     )
-
-    occluded_mask = ((torch.norm(pcl_1_frame_cam0, dim=1) > depth_0 + depth_threshold) & (torch.norm(pcl_0_frame_cam1, dim=1) > depth_1 + depth_threshold))
-
-    mask = pos_mask & ~occluded_mask
 
     return mask
 

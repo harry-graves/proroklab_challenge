@@ -40,7 +40,7 @@ from functions import (
     quat_to_4x4_homog,
     transform_to_world,
     project_to_image,
-    remove_border_points,
+    filter_points,
     visualise_cams_clouds
 )
 
@@ -258,7 +258,7 @@ def generate(idx):
 
     # 3.5 Mask points that lie outside the image
 
-    mask = remove_border_points(ps_0, pcl_1_frame_cam0, pcl_0_frame_cam1, intrinsics_0, depth_0, depth_1)
+    mask = filter_points(ps_0, intrinsics_0, pcl_1_frame_cam0, pcl_0_frame_cam1, depth_0, depth_threshold=0.1)
     common_pcl = transformed_pcl_1[mask]
 
     ##############
