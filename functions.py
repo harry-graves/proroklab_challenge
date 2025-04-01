@@ -1,9 +1,6 @@
-from scipy.spatial import cKDTree
 import open3d as o3d
-import numpy as np
 import torch
 import roma
-import cv2
 
 def depth_map_to_pcl(depth_map, cam_fov):
     """
@@ -96,148 +93,118 @@ def transform_to_world(T_cam_world, point_cloud):
 
     return transformed_point_cloud
 
-def find_common_points(pcl_0, pcl_1, threshold=0.01):
+def project_to_image(point_cloud, intrinsics, T_cam_world):
     """
-    Identifies common points between two point clouds by finding nearest neighbors within a specified threshold.
+    Projects 3D points from the world coordinate frame to 2D pixel coordinates in the camera image.
+
+    The function first transforms the 3D points from the world coordinate system to the camera's local coordinate system 
+    using the inverse of the camera's pose (T_cam_world). Then, it applies the camera's intrinsic matrix to project the 
+    points onto the 2D image plane. The resulting pixel coordinates are flipped horizontally to match the standard 
+    image coordinate convention.
 
     Args:
-        pcl_0 (numpy.ndarray): A point cloud of shape (N, 3).
-        pcl_1 (numpy.ndarray): A second point cloud of shape (M, 3).
-        threshold (float, optional): The maximum allowed distance between matched points. Defaults to 0.01.
+        point_cloud (torch.Tensor): A tensor of shape (N, 3) representing 3D points in the world coordinate frame, 
+                                    where N is the number of points.
+        intrinsics (tuple): A tuple containing the camera's intrinsic parameters (f_x, f_y, W, H)
+        T_cam_world (torch.Tensor): A 4x4 tensor representing the transformation matrix from the world coordinate 
+                                    frame to the camera's coordinate frame.
 
     Returns:
-        numpy.ndarray: A filtered point cloud containing only the points from `pcl_0` that have a match in `pcl_1` within the threshold.
+        tuple:
+            - pixel_coords (torch.Tensor): A tensor of shape (N, 2) representing the 2D pixel coordinates of the 
+                                          projected points in the image, with the x and y coordinates flipped 
+                                          according to the camera coordinate convention.
+            - point_cloud_cam_frame (torch.Tensor): A tensor of shape (N, 3) representing the transformed 3D points 
+                                                     in the camera's local coordinate frame.
 
     Notes:
-        - Uses a KDTree for fast nearest-neighbor search.
-        - Points in `pcl_0` are retained if they have a neighbor in `pcl_1` within the given threshold.
-        - This method assumes both point clouds are already aligned in the same coordinate frame.
+        - The function assumes that the input point cloud is in the world coordinate system and the camera's intrinsic 
+          matrix and pose are provided for a valid projection.
+        - The function flips the x-coordinate of the resulting pixel coordinates to align with the typical image 
+          coordinate convention, where the origin is at the top-left corner and the x-axis points to the right.
     """
-    tree = cKDTree(pcl_1)
-    distances, _ = tree.query(pcl_0, distance_upper_bound=threshold)
+    # Calculate transformation from world back to cam0's frame
+    T_world_cam = torch.linalg.inv(T_cam_world)
 
-    mask = distances < threshold
-    return pcl_0[mask]
+    # Move points from world into cam0's frame
+    point_cloud_extended = torch.cat((point_cloud, torch.ones((point_cloud.shape[0], 1))), dim=1)
+    point_cloud_cam_frame = (point_cloud_extended @ T_world_cam.T)[:, :3]  # Extract XYZ
 
-def project_to_image(point_cloud, intrinsics, T_cam_world, method="torch"):
-    """
-    Projects a 3D point cloud onto a 2D image plane using camera intrinsics and extrinsics.
+    # Project into ideal camera via perspective transformation
+    # NOTE - this clone is redundant, but has been kept for readability
+    pixel_coords = point_cloud_cam_frame.clone()  # (N, 3)
 
-    Args:
-        point_cloud (torch.Tensor): A tensor of shape (N, 3) representing 3D points in the world coordinate frame.
-        intrinsics (list or tuple): Camera intrinsics [f_x, f_y, W, H], where:
-            - f_x, f_y: Focal lengths in pixels.
-            - W, H: Image width and height.
-        T_cam_world (torch.Tensor): A 4x4 homogeneous transformation matrix representing the camera pose in the world frame.
-        method (str, optional): Projection method. Choose between:
-            - "torch": Uses PyTorch-based matrix operations for projection.
-            - "opencv": Uses OpenCV's `cv2.projectPoints` for projection.
-            Default is "torch".
+    # Map the ideal image into the real image using intrinsic matrix
+    f_x, f_y, W, H = intrinsics
+    K = torch.tensor([
+        [f_x,  0,   W / 2],
+        [ 0,  f_y,  H / 2],
+        [ 0,   0,    1   ]
+    ], dtype=torch.float32)
 
-    Returns:
-        torch.Tensor: A tensor of shape (N, 2) containing the 2D pixel coordinates of the projected points.
+    # Apply intrinsics
+    pixel_coords = (K @ pixel_coords.T).T  # (N, 3)
 
-    Raises:
-        ValueError: If an invalid method is specified.
+    # Convert from homogeneous to Cartesian by dividing by depth (Z)
+    pixel_coords = pixel_coords[:, :2] / pixel_coords[:, 2:3]
 
-    Notes:
-        - The function first transforms the 3D points from the world frame into the camera frame.
-        - The "torch" method applies a perspective projection using matrix multiplications.
-        - The "opencv" method uses Rodrigues' rotation formula and OpenCV's `cv2.projectPoints`.
-        - The x-coordinates are flipped to account for differences in coordinate conventions.
-        - The function assumes no lens distortion (distCoeffs set to an empty array in OpenCV).
-    """
-    if method == "torch":
-        # Calculate transformation from world back to cam0's frame
-        T_world_cam = torch.linalg.inv(T_cam_world)
-
-        # Move points from world into cam0's frame
-        point_cloud_extended = torch.cat((point_cloud, torch.ones((point_cloud.shape[0], 1))), dim=1)
-        point_cloud_cam_frame = (point_cloud_extended @ T_world_cam.T)[:, :3]  # Extract XYZ
-
-        # Project into ideal camera via perspective transformation
-        # NOTE - this clone is redundant, but has been kept for readability
-        pixel_coords = point_cloud_cam_frame.clone()  # (N, 3)
-
-        # Map the ideal image into the real image using intrinsic matrix
-        f_x, f_y, W, H = intrinsics
-        K = torch.tensor([
-            [f_x,  0,   W / 2],
-            [ 0,  f_y,  H / 2],
-            [ 0,   0,    1   ]
-        ], dtype=torch.float32)
-
-        # Apply intrinsics
-        pixel_coords = (K @ pixel_coords.T).T  # (N, 3)
-
-        # Convert from homogeneous to Cartesian by dividing by depth (Z)
-        pixel_coords = pixel_coords[:, :2] / pixel_coords[:, 2:3]
     
-    elif method == "opencv":
-        # Calculate transformation from world back to cam0's frame
-        T_world_cam = torch.linalg.inv(T_cam_world)
-        
-        # Put everything into OpenCV format
-        rotation = T_world_cam[:3,:3]
-        rotvec = roma.rotmat_to_rotvec(rotation)
-        translation = T_world_cam[:3,3]
-
-        # Define intrinsic matrix K
-        f_x, f_y, W, H = intrinsics
-        K = torch.zeros([3,3])
-        K[0, 0], K[1, 1], K[0,2], K[1,2] = f_x, f_y, W/2, H/2
-
-        # Project points
-        pixel_coords, _ = cv2.projectPoints(
-            objectPoints=np.array(point_cloud, dtype=np.float32), 
-            rvec=np.array(rotvec, dtype=np.float32), 
-            tvec=np.array(translation, dtype=np.float32), 
-            cameraMatrix=np.array(K, dtype=np.float32), 
-            distCoeffs=np.array([])
-        )
-
-        # Convert back to a PyTorch tensor
-        pixel_coords = torch.tensor(pixel_coords)
-
-        # Remove the middle dimension that cv2.projectPoints creates
-        pixel_coords = pixel_coords.squeeze(axis=1)
-    
-    else:
-
-        raise ValueError("Invalid method. Choose 'torch' or 'opencv'.")
+    # Convert to integer pixel coordinates
+    pixel_coords = torch.tensor(pixel_coords, dtype=torch.int)
     
     # Flip x coords due to difference in coordinate convention
     pixel_coords[:,0] = W - pixel_coords[:,0]
 
     return pixel_coords, point_cloud_cam_frame
 
-def remove_border_points(ps_0, pcl_0, pcl_1, intrinsics_0):
-    """
-    Filters out points that fall outside the valid image boundaries in both camera views.
+def remove_border_points(ps_0, pcl_1_frame_cam0, pcl_0_frame_cam1, intrinsics_0, depth_0, depth_1, depth_threshold=0.1):
 
+    """
+    Filters out points based on their position within the image boundaries and checks for occlusion or depth inconsistencies 
+    between corresponding points in two camera views.
+
+    The function performs the following steps:
+    1. Filters points that lie within the valid image boundaries of the first camera.
+    2. Ensures that points are in front of both cameras (based on their depth in the camera frames).
+    3. Filters out occluded points by comparing their depth values with a provided threshold.
+    
     Args:
         ps_0 (torch.Tensor): A tensor of shape (N, 2) representing pixel coordinates in the first image.
-        ps_1 (torch.Tensor): A tensor of shape (N, 2) representing pixel coordinates in the second image.
-        intrinsics_0 (list or tuple): Camera intrinsics [f_x, f_y, W, H] for the first camera.
-        intrinsics_1 (list or tuple): Camera intrinsics [f_x, f_y, W, H] for the second camera.
+        pcl_1_frame_cam0 (torch.Tensor): A tensor of shape (N, 3) representing 3D points in the first camera frame.
+        pcl_0_frame_cam1 (torch.Tensor): A tensor of shape (N, 3) representing 3D points in the second camera frame.
+        intrinsics_0 (tuple): A tuple containing the intrinsic parameters of the first camera [f_x, f_y, W, H]
+        depth_0 (torch.Tensor): A tensor of shape (H, W) representing the depth map of the first camera.
+        depth_1 (torch.Tensor): A tensor of shape (H, W) representing the depth map of the second camera.
+        depth_threshold (float, optional): A threshold to account for depth inconsistencies between corresponding points. 
+                                           Defaults to 0.1.
 
     Returns:
-        tuple:
-            - ps_0 (torch.Tensor): Filtered pixel coordinates for the first image.
-            - ps_1 (torch.Tensor): Filtered pixel coordinates for the second image.
+        torch.Tensor: A tensor of shape (N,) representing a boolean mask where `True` indicates a point is valid 
+                      (i.e., within the image boundaries, not behind the camera, and not occluded by depth inconsistencies).
 
     Notes:
-        - First, points in `ps_0` are filtered based on the image size of the first camera.
-        - Corresponding points in `ps_1` are also filtered accordingly.
-        - The process is then repeated for `ps_1`, ensuring that only points within both image boundaries remain.
+        - The function ensures that the points lie within the image dimensions of the first camera.
+        - Points that lie behind either camera (i.e., have a negative depth) are filtered out.
+        - Occlusion is detected by comparing the depth values of corresponding points between the two cameras, 
+          using a specified threshold to account for possible depth errors.
     """
     _, _, W, H = intrinsics_0
 
-    mask = (
+    depth_0 = depth_0.flatten()
+    depth_1 = depth_1.flatten()
+
+    pos_mask = (
     (ps_0[:, 0] >= 0) & (ps_0[:, 0] < W) & # Within image width
     (ps_0[:, 1] >= 0) & (ps_0[:, 1] < H) & # Within image height
-    (pcl_0[:,2] < 0) & (pcl_1[:,2] < 0)
+    (pcl_0_frame_cam1[:,2] < 0) & (pcl_1_frame_cam0[:,2] < 0) #& # Infront of both cameras
+    #(depth_0 > torch.norm(pcl_1_frame_cam0, dim=1) + depth_threshold) & (depth_1 > torch.norm(pcl_0_frame_cam1, dim=1) + depth_threshold)
+    #(depth_0 - depth_threshold < torch.norm(pcl_1_frame_cam0, dim=1)) & (torch.norm(pcl_1_frame_cam0, dim=1) < depth_0 + depth_threshold) & 
+    #(depth_1 - depth_threshold < torch.norm(pcl_0_frame_cam1, dim=1)) & (torch.norm(pcl_0_frame_cam1, dim=1) < depth_1 + depth_threshold)
     )
+
+    occluded_mask = ((torch.norm(pcl_1_frame_cam0, dim=1) > depth_0 + depth_threshold) & (torch.norm(pcl_0_frame_cam1, dim=1) > depth_1 + depth_threshold))
+
+    mask = pos_mask & ~occluded_mask
 
     return mask
 

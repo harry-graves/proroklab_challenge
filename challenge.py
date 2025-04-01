@@ -39,7 +39,6 @@ from functions import (
     depth_map_to_pcl,
     quat_to_4x4_homog,
     transform_to_world,
-    find_common_points,
     project_to_image,
     remove_border_points,
     visualise_cams_clouds
@@ -254,12 +253,12 @@ def generate(idx):
 
     # 3. Project points into image space
 
-    ps_0, pcl_1_cam_frame = project_to_image(transformed_pcl_1, intrinsics_0, T_cam0_world)
-    ps_1, pcl_0_cam_frame = project_to_image(transformed_pcl_0, intrinsics_1, T_cam1_world)
+    ps_0, pcl_1_frame_cam0 = project_to_image(transformed_pcl_1, intrinsics_0, T_cam0_world)
+    ps_1, pcl_0_frame_cam1 = project_to_image(transformed_pcl_0, intrinsics_1, T_cam1_world)
 
     # 3.5 Mask points that lie outside the image
 
-    mask = remove_border_points(ps_0, pcl_0_cam_frame, pcl_1_cam_frame, intrinsics_0)
+    mask = remove_border_points(ps_0, pcl_1_frame_cam0, pcl_0_frame_cam1, intrinsics_0, depth_0, depth_1)
     common_pcl = transformed_pcl_1[mask]
 
     ##############
