@@ -119,9 +119,9 @@ def find_common_points(pcl_0, pcl_1, threshold=0.01):
     mask = distances < threshold
     return pcl_0[mask]
 
-def project_to_image(point_cloud, intrinsics, T_cam_world):
+def project_to_image(point_cloud, intrinsics, T_cam_world, method="torch"):
     """
-    Projects a 3D point cloud into 2D image coordinates using camera intrinsics and extrinsics.
+    Projects a 3D point cloud onto a 2D image plane using camera intrinsics and extrinsics.
 
     Args:
         point_cloud (torch.Tensor): A tensor of shape (N, 3) representing 3D points in the world coordinate frame.
@@ -129,49 +129,86 @@ def project_to_image(point_cloud, intrinsics, T_cam_world):
             - f_x, f_y: Focal lengths in pixels.
             - W, H: Image width and height.
         T_cam_world (torch.Tensor): A 4x4 homogeneous transformation matrix representing the camera pose in the world frame.
+        method (str, optional): Projection method. Choose between:
+            - "torch": Uses PyTorch-based matrix operations for projection.
+            - "opencv": Uses OpenCV's `cv2.projectPoints` for projection.
+            Default is "torch".
 
     Returns:
         torch.Tensor: A tensor of shape (N, 2) containing the 2D pixel coordinates of the projected points.
 
+    Raises:
+        ValueError: If an invalid method is specified.
+
     Notes:
-        - Converts the world-to-camera transformation to OpenCV format.
-        - Uses Rodrigues' rotation formula to convert the rotation matrix to a rotation vector.
-        - Applies OpenCV's `cv2.projectPoints` for perspective projection.
-        - Corrects the x-coordinates to account for OpenCV’s coordinate convention.
-        - Assumes no lens distortion (distCoeffs set to an empty array).
+        - The function first transforms the 3D points from the world frame into the camera frame.
+        - The "torch" method applies a perspective projection using matrix multiplications.
+        - The "opencv" method uses Rodrigues' rotation formula and OpenCV's `cv2.projectPoints`.
+        - The x-coordinates are flipped to account for differences in coordinate conventions.
+        - The function assumes no lens distortion (distCoeffs set to an empty array in OpenCV).
     """
-    # Calculate transformation from world back to cam0's frame
-    T_world_cam0 = torch.linalg.inv(T_cam_world)
+    if method == "torch":
+        # Calculate transformation from world back to cam0's frame
+        T_world_cam = torch.linalg.inv(T_cam_world)
+
+        # Move points from world into cam0's frame
+        point_cloud_extended = torch.cat((point_cloud, torch.ones((point_cloud.shape[0], 1))), dim=1)
+        transformed_point_cloud = (point_cloud_extended @ T_world_cam.T)[:, :3]  # Extract XYZ
+
+        # Project into ideal camera via perspective transformation
+        pixel_coords = transformed_point_cloud.clone()  # (N, 3)
+
+        # Map the ideal image into the real image using intrinsic matrix
+        f_x, f_y, W, H = intrinsics
+        K = torch.tensor([
+            [f_x,  0,   W / 2],
+            [ 0,  f_y,  H / 2],
+            [ 0,   0,    1   ]
+        ], dtype=torch.float32)
+
+        # Apply intrinsics
+        pixel_coords = (K @ pixel_coords.T).T  # (N, 3)
+
+        # Convert from homogeneous to Cartesian by dividing by depth (Z)
+        pixel_coords = pixel_coords[:, :2] / pixel_coords[:, 2:3]
     
-    # Put everything into OpenCV format
-    rotation = T_world_cam0[:3,:3]
-    rotvec = roma.rotmat_to_rotvec(rotation)
-    translation = T_world_cam0[:3,3]
+    elif method == "opencv":
+        # Calculate transformation from world back to cam0's frame
+        T_world_cam = torch.linalg.inv(T_cam_world)
+        
+        # Put everything into OpenCV format
+        rotation = T_world_cam[:3,:3]
+        rotvec = roma.rotmat_to_rotvec(rotation)
+        translation = T_world_cam[:3,3]
 
-    # Define intrinsic matrix K
-    f_x, f_y, W, H = intrinsics
-    K = torch.zeros([3,3])
-    K[0, 0], K[1, 1], K[0,2], K[1,2] = f_x, f_y, W/2, H/2
+        # Define intrinsic matrix K
+        f_x, f_y, W, H = intrinsics
+        K = torch.zeros([3,3])
+        K[0, 0], K[1, 1], K[0,2], K[1,2] = f_x, f_y, W/2, H/2
 
-    # Project points
-    pixel_points, _ = cv2.projectPoints(
-        objectPoints=np.array(point_cloud, dtype=np.float32), 
-        rvec=np.array(rotvec, dtype=np.float32), 
-        tvec=np.array(translation, dtype=np.float32), 
-        cameraMatrix=np.array(K, dtype=np.float32), 
-        distCoeffs=np.array([])
-    )
+        # Project points
+        pixel_coords, _ = cv2.projectPoints(
+            objectPoints=np.array(point_cloud, dtype=np.float32), 
+            rvec=np.array(rotvec, dtype=np.float32), 
+            tvec=np.array(translation, dtype=np.float32), 
+            cameraMatrix=np.array(K, dtype=np.float32), 
+            distCoeffs=np.array([])
+        )
 
-    # Convert back to a PyTorch tensor
-    pixel_points = torch.tensor(pixel_points)
+        # Convert back to a PyTorch tensor
+        pixel_coords = torch.tensor(pixel_coords)
 
-    # Remove the middle dimension
-    pixel_points = pixel_points.squeeze(axis=1)
+        # Remove the middle dimension that cv2.projectPoints creates
+        pixel_coords = pixel_coords.squeeze(axis=1)
+    
+    else:
 
-    # Flip x coords due to difference in OpenCV's coordinate convention
-    pixel_points[:,0] = W - pixel_points[:,0]
+        raise ValueError("Invalid method. Choose 'torch' or 'opencv'.")
+    
+    # Flip x coords due to difference in coordinate convention
+    pixel_coords[:,0] = W - pixel_coords[:,0]
 
-    return pixel_points
+    return pixel_coords
 
 def remove_border_points(ps_0, ps_1, intrinsics_0, intrinsics_1):
     """

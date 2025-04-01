@@ -265,8 +265,8 @@ def generate(idx):
 
     # 3. Project points into image space
 
-    ps_0 = project_to_image(common_pcl, intrinsics_0, T_cam0_world)
-    ps_1 = project_to_image(common_pcl, intrinsics_1, T_cam1_world)
+    ps_0 = project_to_image(common_pcl, intrinsics_0, T_cam0_world, method="torch")
+    ps_1 = project_to_image(common_pcl, intrinsics_1, T_cam1_world, method="opencv")
 
     ps_0, ps_1 = remove_border_points(ps_0, ps_1, intrinsics_0, intrinsics_1)
 
